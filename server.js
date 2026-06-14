@@ -26,11 +26,11 @@ const anthropic = new Anthropic({
 // 20 requests per 15 minutes per IP address, applied only to /api/chat
 const chatLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
-    error: 'Too many requests. You can send 20 messages every 15 minutes. Please wait and try again.',
+    error: 'Too many requests. You can send 200 messages every 15 minutes. Please wait and try again.',
   },
 });
 
