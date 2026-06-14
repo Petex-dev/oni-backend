@@ -8,7 +8,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.5.2"
   }
 }
