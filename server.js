@@ -34,24 +34,29 @@ app.get('/api/health', (req, res) => {
 });
 
 app.post('/api/chat', chatLimiter, async (req, res) => {
-  const { message } = req.body;
+  const { message, messages, system, model, max_tokens } = req.body;
 
-  if (!message) {
-    return res.status(400).json({ error: 'message is required' });
+  let resolvedMessages;
+  if (messages) {
+    resolvedMessages = messages;
+  } else if (message) {
+    resolvedMessages = [{ role: 'user', content: message }];
+  } else {
+    return res.status(400).json({ error: 'message or messages is required' });
   }
 
+  const params = {
+    model: model || 'claude-sonnet-4-5',
+    max_tokens: max_tokens || 4096,
+    messages: resolvedMessages,
+  };
+
+  if (system) params.system = system;
+
   try {
-    const stream = anthropic.messages.stream({
-      model: 'claude-opus-4-8',
-      max_tokens: 16000,
-      thinking: { type: 'adaptive' },
-      messages: [{ role: 'user', content: message }],
-    });
-
+    const stream = anthropic.messages.stream(params);
     const response = await stream.finalMessage();
-
-    const textBlock = response.content.find(block => block.type === 'text');
-    res.json({ reply: textBlock ? textBlock.text : '' });
+    res.json(response);
   } catch (error) {
     console.error('Anthropic API error:', error.message);
     res.status(500).json({ error: 'Failed to get response from Anthropic' });
