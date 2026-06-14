@@ -1,0 +1,14 @@
+{
+  "name": "oni-backend",
+  "version": "1.0.0",
+  "description": "Minimal Express server for Oni backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2"
+  }
+}
