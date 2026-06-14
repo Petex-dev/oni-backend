@@ -7,6 +7,8 @@ const Anthropic = require('@anthropic-ai/sdk');
 const app = express();
 const port = process.env.PORT || 3000;
 
+app.set('trust proxy', 1);
+
 // Only allow requests from onimastering.com (and localhost for local dev)
 app.use(cors({
   origin: ['https://onimastering.com', 'https://www.onimastering.com', 'http://localhost:3000'],
