@@ -15,8 +15,10 @@ const port = process.env.PORT || 3000;
 app.set('trust proxy', 1);
 
 // Only allow requests from onimastering.com (and localhost for local dev)
+// TEMP — iPhone TTS gain-boost listening test (2026-08-02). Remove 'http://192.168.1.152:8790'
+// once Pete's confirmed the test result; not a permanent origin.
 app.use(cors({
-  origin: ['https://onimastering.com', 'https://www.onimastering.com', 'http://localhost:3000'],
+  origin: ['https://onimastering.com', 'https://www.onimastering.com', 'http://localhost:3000', 'http://192.168.1.152:8790'],
 }));
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
