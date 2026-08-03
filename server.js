@@ -15,13 +15,8 @@ const port = process.env.PORT || 3000;
 app.set('trust proxy', 1);
 
 // Only allow requests from onimastering.com (and localhost for local dev)
-// TEMP — iPhone TTS gain-boost listening test (2026-08-02). Remove 'http://192.168.1.152:8790'
-// once Pete's confirmed the test result; not a permanent origin.
-// TEMP — iPhone silent-playback/ducking diagnostic via Cloudflare quick tunnel (2026-08-03).
-// Remove 'https://carpet-parameter-mumbai-patents.trycloudflare.com' once the investigation is done;
-// this is a random per-session trycloudflare.com URL, not a permanent origin.
 app.use(cors({
-  origin: ['https://onimastering.com', 'https://www.onimastering.com', 'http://localhost:3000', 'http://192.168.1.152:8790', 'https://carpet-parameter-mumbai-patents.trycloudflare.com'],
+  origin: ['https://onimastering.com', 'https://www.onimastering.com', 'http://localhost:3000'],
 }));
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
