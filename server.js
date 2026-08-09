@@ -48,49 +48,191 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     return res.status(400).json({ error: 'Invalid signature' });
   }
 
-  if (event.type !== 'checkout.session.completed') {
-    return res.status(200).json({ received: true });
-  }
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  );
 
-  const session = event.data.object;
-  const userId = session.client_reference_id;
-  // Set at checkout-session creation time (see /api/create-checkout-session) —
-  // session.line_items is not present on this webhook payload by default.
-  const priceId = session.metadata?.priceId;
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.client_reference_id;
+    // Set at checkout-session creation time (see /api/create-checkout-session) —
+    // session.line_items is not present on this webhook payload by default.
+    const priceId = session.metadata?.priceId;
 
-  try {
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
+    try {
+      if (priceId && PLAN_BY_PRICE_ID[priceId]) {
+        const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
+        const { error } = await supabase
+          .from('profiles')
+          .update({
+            plan,
+            credits,
+            credits_refreshed_at: new Date().toISOString(),
+            stripe_customer_id: session.customer,
+            stripe_subscription_id: session.subscription,
+          })
+          .eq('id', userId);
 
-    if (priceId && PLAN_BY_PRICE_ID[priceId]) {
+        if (error) throw error;
+      } else if (priceId === REUP_PRICE_ID) {
+        const { error } = await supabase.rpc('increment_credits', {
+          p_user_id: userId,
+          p_amount: 10,
+        });
+
+        if (error) throw error;
+      }
+
+      res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Stripe webhook handler error:', error.message);
+      res.status(500).json({ error: 'Webhook handler failed' });
+    }
+  } else if (event.type === 'invoice.paid') {
+    // Monthly/yearly renewal. billing_reason is 'subscription_create' for the
+    // very first invoice — that one is already handled by checkout.session.completed
+    // above, so only act on 'subscription_cycle' (recurring renewals) here.
+    const invoice = event.data.object;
+
+    if (invoice.billing_reason !== 'subscription_cycle') {
+      return res.status(200).json({ received: true });
+    }
+
+    const line = invoice.lines.data[0];
+    const priceId = line?.pricing?.price_details?.price;
+    const periodStart = line?.period?.start;
+
+    if (!priceId || !PLAN_BY_PRICE_ID[priceId] || !periodStart) {
+      return res.status(200).json({ received: true });
+    }
+
+    try {
       const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
+      const periodStartIso = new Date(periodStart * 1000).toISOString();
+
+      // Idempotent: only reset credits if we haven't already refreshed them
+      // for this billing period (guards against duplicate webhook delivery).
+      // This looks up the profile by stripe_customer_id — invoices have no
+      // client_reference_id / userId, unlike checkout sessions.
       const { error } = await supabase
         .from('profiles')
         .update({
           plan,
           credits,
           credits_refreshed_at: new Date().toISOString(),
-          stripe_customer_id: session.customer,
-          stripe_subscription_id: session.subscription,
+          payment_status: 'active',
         })
-        .eq('id', userId);
+        .eq('stripe_customer_id', invoice.customer)
+        .lt('credits_refreshed_at', periodStartIso);
 
       if (error) throw error;
-    } else if (priceId === REUP_PRICE_ID) {
-      const { error } = await supabase.rpc('increment_credits', {
-        p_user_id: userId,
-        p_amount: 10,
-      });
+
+      res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Stripe webhook handler error (invoice.paid):', error.message);
+      res.status(500).json({ error: 'Webhook handler failed' });
+    }
+  } else if (event.type === 'invoice.payment_failed') {
+    // A renewal payment failed. Stripe's own retry schedule (dunning) will keep
+    // trying for a few days — we just flag the account as not in good standing
+    // so paid-tier access can be gated on this. We do NOT touch credits/plan
+    // here: no invoice.paid means no new credits get granted while failing.
+    const invoice = event.data.object;
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ payment_status: 'past_due' })
+        .eq('stripe_customer_id', invoice.customer);
 
       if (error) throw error;
+
+      res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Stripe webhook handler error (invoice.payment_failed):', error.message);
+      res.status(500).json({ error: 'Webhook handler failed' });
+    }
+  } else if (event.type === 'customer.subscription.updated') {
+    // Plan change (upgrade/downgrade) via the customer portal. Only sync when
+    // the active price actually maps to a different plan than what's stored —
+    // subscription.updated also fires for unrelated changes (e.g. toggling
+    // cancel_at_period_end, payment method updates) and we don't want those to
+    // reset credits_refreshed_at / re-grant credits.
+    const subscription = event.data.object;
+    const priceId = subscription.items.data[0]?.price?.id;
+
+    if (!priceId || !PLAN_BY_PRICE_ID[priceId] || subscription.status !== 'active') {
+      return res.status(200).json({ received: true });
     }
 
+    try {
+      const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
+      const { data: existing, error: fetchError } = await supabase
+        .from('profiles')
+        .select('plan, credits')
+        .eq('stripe_customer_id', subscription.customer)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      if (existing && existing.plan !== plan) {
+        // Upgrade vs downgrade is decided against the user's CURRENT credits
+        // balance, not the old plan's nominal amount — someone who's already
+        // used most of their credits shouldn't be treated as "downgrading"
+        // just because their remaining balance happens to be low.
+        const isUpgrade = credits > existing.credits;
+        const update = {
+          plan,
+          stripe_subscription_id: subscription.id,
+          payment_status: 'active',
+        };
+        if (isUpgrade) {
+          // Upgrade: unlock the new plan's full credit amount immediately.
+          update.credits = credits;
+          update.credits_refreshed_at = new Date().toISOString();
+        }
+        // Downgrade: only `plan` changes here. Credits stay as-is until the
+        // next invoice.paid renewal resets them to the new (lower) amount.
+        const { error } = await supabase
+          .from('profiles')
+          .update(update)
+          .eq('stripe_customer_id', subscription.customer);
+
+        if (error) throw error;
+      }
+
+      res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Stripe webhook handler error (customer.subscription.updated):', error.message);
+      res.status(500).json({ error: 'Webhook handler failed' });
+    }
+  } else if (event.type === 'customer.subscription.deleted') {
+    // Subscription actually ended (cancellation reached period end, or Stripe
+    // canceled it after exhausting dunning retries). Our billing portal is
+    // configured to cancel at period end, so this fires exactly when access
+    // should end — not the moment the user clicks "cancel".
+    const subscription = event.data.object;
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          plan: 'free',
+          payment_status: 'active',
+          stripe_subscription_id: null,
+        })
+        .eq('stripe_customer_id', subscription.customer);
+
+      if (error) throw error;
+
+      res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Stripe webhook handler error (customer.subscription.deleted):', error.message);
+      res.status(500).json({ error: 'Webhook handler failed' });
+    }
+  } else {
     res.status(200).json({ received: true });
-  } catch (error) {
-    console.error('Stripe webhook handler error:', error.message);
-    res.status(500).json({ error: 'Webhook handler failed' });
   }
 });
 
@@ -137,6 +279,43 @@ app.post('/api/create-checkout-session', chatLimiter, async (req, res) => {
   } catch (error) {
     console.error('Stripe checkout session error:', error.message);
     res.status(500).json({ error: 'Failed to create checkout session' });
+  }
+});
+
+app.post('/api/create-portal-session', chatLimiter, async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+
+  try {
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('stripe_customer_id')
+      .eq('id', userId)
+      .single();
+
+    if (error) throw error;
+
+    if (!profile || !profile.stripe_customer_id) {
+      return res.status(400).json({ error: 'No billing account found for this user' });
+    }
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: profile.stripe_customer_id,
+      return_url: 'https://onimastering.com/?billing=return',
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Stripe portal session error:', error.message);
+    res.status(500).json({ error: 'Failed to create billing portal session' });
   }
 });
 
