@@ -95,19 +95,34 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     // above, so only act on 'subscription_cycle' (recurring renewals) here.
     const invoice = event.data.object;
 
-    if (invoice.billing_reason !== 'subscription_cycle') {
-      return res.status(200).json({ received: true });
-    }
+    const subscriptionId = invoice.parent?.subscription_details?.subscription;
 
-    const line = invoice.lines.data[0];
-    const priceId = line?.pricing?.price_details?.price;
-    const periodStart = line?.period?.start;
-
-    if (!priceId || !PLAN_BY_PRICE_ID[priceId] || !periodStart) {
+    if (invoice.billing_reason !== 'subscription_cycle' || !subscriptionId) {
       return res.status(200).json({ received: true });
     }
 
     try {
+      // Read the CURRENT active price off the subscription itself rather than
+      // invoice.lines.data[0] — invoices with proration line items (from a
+      // recent plan change) don't guarantee the first line is the recurring
+      // charge, so line-based parsing can pick up a stale/wrong price.
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+      // The final invoice for a canceled subscription's last period can still
+      // arrive as invoice.paid after customer.subscription.deleted has already
+      // run — don't let it overwrite the plan='free' transition that handler
+      // already applied.
+      if (subscription.status === 'canceled') {
+        return res.status(200).json({ received: true });
+      }
+
+      const priceId = subscription.items.data[0]?.price?.id;
+      const periodStart = subscription.items.data[0]?.current_period_start;
+
+      if (!priceId || !PLAN_BY_PRICE_ID[priceId] || !periodStart) {
+        return res.status(200).json({ received: true });
+      }
+
       const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
       const periodStartIso = new Date(periodStart * 1000).toISOString();
 
