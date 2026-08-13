@@ -359,8 +359,10 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
     const response = await stream.finalMessage();
     res.json(response);
   } catch (error) {
+    const status = error.status || 500;
+    const message = error.error?.error?.message || error.message || 'Failed to get response from Anthropic';
     console.error('Anthropic API error:', error.message);
-    res.status(500).json({ error: 'Failed to get response from Anthropic' });
+    res.status(status).json({ error: { message } });
   }
 });
 
@@ -383,7 +385,8 @@ app.post('/api/tts', chatLimiter, async (req, res) => {
 
     if (!response.ok) {
       const err = await response.json();
-      return res.status(response.status).json({ error: err.error?.message || 'TTS failed' });
+      const message = err.error?.message || 'TTS failed';
+      return res.status(response.status).json({ error: { message } });
     }
 
     res.setHeader('Content-Type', 'audio/mpeg');
