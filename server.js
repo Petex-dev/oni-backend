@@ -276,7 +276,7 @@ app.post('/api/create-checkout-session', chatLimiter, async (req, res) => {
   const { priceId, userId, userEmail } = req.body;
 
   if (!ALLOWED_PRICE_IDS.has(priceId)) {
-    return res.status(400).json({ error: 'Invalid priceId' });
+    return res.status(400).json({ error: { message: 'Invalid priceId' } });
   }
 
   try {
@@ -292,8 +292,10 @@ app.post('/api/create-checkout-session', chatLimiter, async (req, res) => {
 
     res.json({ url: session.url });
   } catch (error) {
+    const status = error.statusCode || 500;
+    const message = error.message || 'Failed to create checkout session';
     console.error('Stripe checkout session error:', error.message);
-    res.status(500).json({ error: 'Failed to create checkout session' });
+    res.status(status).json({ error: { message } });
   }
 });
 
@@ -301,7 +303,7 @@ app.post('/api/create-portal-session', chatLimiter, async (req, res) => {
   const { userId } = req.body;
 
   if (!userId) {
-    return res.status(400).json({ error: 'userId is required' });
+    return res.status(400).json({ error: { message: 'userId is required' } });
   }
 
   try {
@@ -319,7 +321,7 @@ app.post('/api/create-portal-session', chatLimiter, async (req, res) => {
     if (error) throw error;
 
     if (!profile || !profile.stripe_customer_id) {
-      return res.status(400).json({ error: 'No billing account found for this user' });
+      return res.status(400).json({ error: { message: 'No billing account found for this user' } });
     }
 
     const session = await stripe.billingPortal.sessions.create({
@@ -329,8 +331,10 @@ app.post('/api/create-portal-session', chatLimiter, async (req, res) => {
 
     res.json({ url: session.url });
   } catch (error) {
+    const status = error.statusCode || 500;
+    const message = error.message || 'Failed to create billing portal session';
     console.error('Stripe portal session error:', error.message);
-    res.status(500).json({ error: 'Failed to create billing portal session' });
+    res.status(status).json({ error: { message } });
   }
 });
 
