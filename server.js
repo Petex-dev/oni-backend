@@ -384,7 +384,7 @@ app.post('/api/tts', chatLimiter, async (req, res) => {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model: 'tts-1', input: text, voice }),
+      body: JSON.stringify({ model: 'gpt-4o-mini-tts', input: text, voice }),
     });
 
     if (!response.ok) {
