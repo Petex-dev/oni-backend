@@ -371,7 +371,7 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
 });
 
 app.post('/api/tts', chatLimiter, async (req, res) => {
-  const { text, voice = 'echo' } = req.body;
+  const { text, voice = 'echo', speed } = req.body;
 
   if (!text) {
     return res.status(400).json({ error: 'text is required' });
@@ -384,7 +384,13 @@ app.post('/api/tts', chatLimiter, async (req, res) => {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model: 'gpt-4o-mini-tts', input: text, voice }),
+      body: JSON.stringify({
+        model: 'gpt-4o-mini-tts',
+        input: text,
+        voice,
+        speed: speed || 1.0,
+        instructions: 'Speak in a warm, natural, engaged conversational tone, like an experienced audio engineer talking through decisions with a colleague — not a flat, generic narrator.',
+      }),
     });
 
     if (!response.ok) {
