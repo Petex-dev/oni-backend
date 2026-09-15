@@ -389,7 +389,7 @@ app.post('/api/tts', chatLimiter, async (req, res) => {
         input: text,
         voice,
         speed: speed || 1.0,
-        instructions: 'Speak in a warm, natural, engaged conversational tone, like an experienced audio engineer talking through decisions with a colleague — not a flat, generic narrator.',
+        instructions: 'Speak with genuine warmth and RANGE, like a real seasoned mastering engineer who loves music and is sitting right next to the user. Let real energy come through — sound audibly excited when something sounds great, focused and reassuring when troubleshooting a problem, satisfied when a mix is finally dialed in. Match your tone to what\'s being said, never flat or robotic, never a generic narrator reading a script.',
       }),
     });
 
