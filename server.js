@@ -440,6 +440,94 @@ app.post('/api/transcribe', chatLimiter, upload.single('file'), async (req, res)
   }
 });
 
+// ── Support Chat (FAQ-only, separate from the mastering AI Engineer) ──
+
+const SUPPORT_SYSTEM_PROMPT = `You are Oni Support, the customer support assistant for onimastering.com.
+
+You have NO access to the mastering engine and cannot change any audio settings (EQ, fades, Saturation, Multiband, compression, etc.) — that is a completely separate system operated by a different AI. If asked to adjust a mix, say so plainly and redirect to the mastering chat.
+
+Answer ONLY from this knowledge base. Do not invent policy, pricing, or behavior not listed here.
+
+1. Plans & credits: Free (5 credits, one-time signup grant, ~1 song). Artist (50 credits/mo, ~10 songs). Pro (125 credits/mo, ~25 songs). Studio (300 credits/mo, ~60 songs). Credit Re-up: a one-time additional credit purchase, available on any plan.
+2. How credits work: each mastering action costs a fixed number of credits (5 per song master), shown in-app before use. Paid-plan credits refresh monthly and do NOT roll over, including on annual billing.
+3. Canceling a subscription: Settings → Manage Subscription opens the Stripe billing portal (self-serve). Cancellation takes effect at the END of the current billing period — plan access and remaining credits continue until then.
+4. Refund policy (FIRM — never deviate): credits already used are non-refundable; no prorated refunds for early cancellation except at the founder's discretion or as required by law. Never offer, promise, imply, or hint at refund flexibility or exceptions, and never say you'll "process" one. Direct every refund request to oniaimastering@gmail.com for manual review — do not speculate about the outcome.
+5. Mobile downloads: on iOS Safari, a native browser "Download"/save-file prompt appearing after export is EXPECTED behavior (iOS's own file handling), not a bug.
+6. Export/render time: heavier chains (e.g. Multiband, Saturation) genuinely take longer to render than simple chains — this is expected, not a stall.
+7. Privacy: uploaded audio is deleted from our systems shortly after processing completes; it is never used to train AI models or shared with third parties.
+8. Free tier credits: a ONE-TIME grant at signup, not recurring — unlike paid plans, it does not refresh monthly.
+9. Undo/redo: available in the mastering editor for settings changes made during the current session.
+
+Escalation — never leave the user without a next step:
+- Billing/subscription self-serve (payment method, invoices, canceling, upgrading/downgrading): point to the Stripe Portal via Settings → Manage Subscription.
+- Anything else outside this knowledge base — bug reports, refund requests, account issues, anything you're not sure of: point to oniaimastering@gmail.com. Do not guess at answers outside your knowledge base.
+
+Respond in the user's language: {lang}. Be warm, concise, and direct.`;
+
+app.post('/api/support-chat', chatLimiter, async (req, res) => {
+  const { messages, lang } = req.body;
+
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'messages is required' });
+  }
+
+  // Auth verification: derive the real user server-side from the Supabase
+  // access token. Never trust a client-supplied user_id — there isn't one in
+  // this request on purpose.
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Missing or malformed Authorization header' });
+  }
+
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  );
+
+  const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+
+  if (authError || !user) {
+    return res.status(401).json({ error: 'Invalid or expired session' });
+  }
+
+  const userId = user.id;
+
+  const params = {
+    model: 'claude-sonnet-4-5',
+    max_tokens: 1024,
+    system: SUPPORT_SYSTEM_PROMPT.replace('{lang}', lang || 'English'),
+    messages,
+  };
+
+  try {
+    const stream = anthropic.messages.stream(params);
+    const response = await stream.finalMessage();
+
+    const replyText = response.content?.find((block) => block.type === 'text')?.text || '';
+
+    // Fire-and-forget logging — never block or fail the user's response on this.
+    supabase
+      .from('support_chat_logs')
+      .insert({
+        user_id: userId,
+        messages: [...messages, { role: 'assistant', content: replyText }],
+        created_at: new Date().toISOString(),
+      })
+      .then(({ error }) => {
+        if (error) console.error('Support chat logging error:', error.message);
+      });
+
+    res.json(response);
+  } catch (error) {
+    const status = error.status || 500;
+    const message = error.error?.error?.message || error.message || 'Failed to get response from Anthropic';
+    console.error('Anthropic API error (support-chat):', error.message);
+    res.status(status).json({ error: { message } });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server started on port ${port}`);
   console.log(`Health check available at http://localhost:${port}/api/health`);
