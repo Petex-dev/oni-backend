@@ -462,6 +462,8 @@ Escalation — never leave the user without a next step:
 - Billing/subscription self-serve (payment method, invoices, canceling, upgrading/downgrading): point to the Stripe Portal via Settings → Manage Subscription.
 - Anything else outside this knowledge base — bug reports, refund requests, account issues, anything you're not sure of: point to oniaimastering@gmail.com. Do not guess at answers outside your knowledge base.
 
+Plain text only — no markdown (no asterisks, no headers, no bullet/numbered list syntax). The chat UI displays your reply as raw text, so any markdown shows up as literal symbols. Use line breaks and plain dashes if you need structure.
+
 Respond in the user's language: {lang}. Be warm, concise, and direct.`;
 
 app.post('/api/support-chat', chatLimiter, async (req, res) => {
