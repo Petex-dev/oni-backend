@@ -22,14 +22,14 @@ app.use(cors({
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 const PLAN_BY_PRICE_ID = {
-  'price_1Tuf1XKjqIxiI4UrVsOeXrlQ': { plan: 'artist', credits: 50 }, // Artist monthly
-  'price_1Tuf93KjqIxiI4UrzG26INfg': { plan: 'artist', credits: 50 }, // Artist yearly
-  'price_1TufCGKjqIxiI4Ur7Z7aLSaS': { plan: 'pro', credits: 125 }, // Pro monthly
-  'price_1TufD2KjqIxiI4UrEP8oGR4N': { plan: 'pro', credits: 125 }, // Pro yearly
-  'price_1TufEGKjqIxiI4UrrgAIYRTf': { plan: 'studio', credits: 300 }, // Studio monthly
-  'price_1TufExKjqIxiI4Ur0vsu2mLr': { plan: 'studio', credits: 300 }, // Studio yearly
+  'price_1UHoSK3jfi4dDsisTns53CGN': { plan: 'artist', credits: 50 }, // Artist monthly
+  'price_1UHoSJ3jfi4dDsisYWIwzvEe': { plan: 'artist', credits: 50 }, // Artist yearly
+  'price_1UHoSJ3jfi4dDsisxBXGSGml': { plan: 'pro', credits: 125 }, // Pro monthly
+  'price_1UHoSJ3jfi4dDsis4MSeybV4': { plan: 'pro', credits: 125 }, // Pro yearly
+  'price_1UHoSN3jfi4dDsis1t6zZ2bB': { plan: 'studio', credits: 300 }, // Studio monthly
+  'price_1UHoSM3jfi4dDsispDYAgtCq': { plan: 'studio', credits: 300 }, // Studio yearly
 };
-const REUP_PRICE_ID = 'price_1TufHBKjqIxiI4UrGwz7YUg9'; // Credit Re-up (one-time)
+const REUP_PRICE_ID = 'price_1UHoSJ3jfi4dDsishsXnGTXh'; // Credit Re-up (one-time)
 const ALLOWED_PRICE_IDS = new Set([...Object.keys(PLAN_BY_PRICE_ID), REUP_PRICE_ID]);
 
 // Stripe webhook needs the raw body to verify the signature, so this route
