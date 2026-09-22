@@ -71,3 +71,26 @@ Deployed on Railway, connected to this GitHub repo for auto-deploy on push to `m
 - Stripe SDK
 - Supabase JS client
 - dotenv for local environment variables
+
+## Known issues / backlog
+
+- **Re-up credits don't survive a renewal reset (2026-09-22).** `profiles.credits`
+  is a single combined integer — there's no separate tracking of "came from
+  subscription" vs. "came from Re-up." The `invoice.paid` renewal handler
+  correctly resets credits to the new billing period's plan amount (the
+  no-rollover rule), but since it can't distinguish the two, it also wipes out
+  any unused Re-up credits a customer separately paid for if they haven't spent
+  them before their next renewal. Only hits someone who buys a Re-up and
+  doesn't use it before the next renewal — rare, not a launch blocker, comp
+  affected customers manually in the meantime.
+  **Correct fix:** track Re-up credits in a separate column (e.g.
+  `bonus_credits`) that Re-up adds to and renewal never touches; combine both
+  for display/spending. Requires a schema change plus updating wherever
+  credits are spent/displayed (`get_my_credits` RPC, frontend credit display)
+  — do this as its own focused task, not a quick patch. (Two cheaper
+  alternatives were considered and rejected: leaving it as-is has the same
+  "customer loses what they paid for" problem this was found alongside; a
+  `GREATEST(new plan amount, existing credits)` band-aid on renewal is
+  imprecise — it can't tell recently-bought Re-up credits apart from leftover
+  unused subscription credits, so it would also let leftover balances survive
+  and quietly undermine the no-rollover margin protection.)
