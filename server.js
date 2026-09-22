@@ -63,11 +63,23 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     try {
       if (priceId && PLAN_BY_PRICE_ID[priceId]) {
         const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
+
+        // A new subscription is a purchase, not a renewal — add the plan's credits to
+        // whatever the customer already has (free-tier leftovers, unused Re-up credits)
+        // rather than overwriting. Never let paying at this moment cost them credits.
+        const { data: existingProfile, error: fetchError } = await supabase
+          .from('profiles')
+          .select('credits')
+          .eq('id', userId)
+          .single();
+
+        if (fetchError) throw fetchError;
+
         const { error } = await supabase
           .from('profiles')
           .update({
             plan,
-            credits,
+            credits: (existingProfile?.credits || 0) + credits,
             credits_refreshed_at: new Date().toISOString(),
             stripe_customer_id: session.customer,
             stripe_subscription_id: session.subscription,
@@ -203,8 +215,9 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
           payment_status: 'active',
         };
         if (isUpgrade) {
-          // Upgrade: unlock the new plan's full credit amount immediately.
-          update.credits = credits;
+          // Upgrade is a purchase (proration charge), not a renewal — add the new
+          // plan's credits to the existing balance rather than overwriting it.
+          update.credits = existing.credits + credits;
           update.credits_refreshed_at = new Date().toISOString();
         }
         // Downgrade: only `plan` changes here. Credits stay as-is until the
