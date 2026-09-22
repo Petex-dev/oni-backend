@@ -321,7 +321,7 @@ app.post('/api/create-portal-session', chatLimiter, async (req, res) => {
     if (error) throw error;
 
     if (!profile || !profile.stripe_customer_id) {
-      return res.status(400).json({ error: { message: 'No billing account found for this user' } });
+      return res.status(400).json({ error: { message: 'No billing account found for this user', code: 'no_billing_account' } });
     }
 
     const session = await stripe.billingPortal.sessions.create({
