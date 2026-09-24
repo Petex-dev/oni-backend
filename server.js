@@ -88,7 +88,9 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
 
         if (error) throw error;
       } else if (priceId === REUP_PRICE_ID) {
-        const { error } = await supabase.rpc('increment_credits', {
+        // Re-up credits go to bonus_credits, which the invoice.paid renewal reset
+        // never touches — a customer keeps what they paid for across renewals.
+        const { error } = await supabase.rpc('increment_bonus_credits', {
           p_user_id: userId,
           p_amount: 10,
         });
