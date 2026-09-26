@@ -85,15 +85,18 @@ Deployed on Railway, connected to this GitHub repo for auto-deploy on push to `m
   Verified with `scripts/18-bonus-credits-verify.js`.
   **Still to do:** Migration 2 (drop the now-unused `increment_credits`).
 
-- **IN PROGRESS 2026-09-26 — credit prices set server-side.** `deduct_credits`
+- **FIXED 2026-09-26 — credit prices set server-side.** `deduct_credits`
   used to take a browser-chosen `p_amount` (a user could pay 1 credit for a
   5-credit master). New overload `deduct_credits(p_operation, p_quantity)` looks
   the price up in `credit_prices` and logs every charge to `credit_ledger`
   (user, operation, quantity, cost, and which pool paid — for future refunds).
   `migrations/2026-09-26_migration3_server_side_pricing.sql` adds it alongside the
   old version; `..._migration4_drop_client_priced_deduct.sql` drops the old
-  `p_amount` version once the new frontend is live. The hole is only closed after
-  Migration 4.
+  `p_amount` version. All three migrations have been run; only
+  `deduct_credits(p_operation, p_quantity)` remains. Verified with
+  `scripts/20-server-side-pricing-verify.js` and
+  `scripts/21-pricing-frontend-e2e.js`. Frontend: oni-frontend `b287917`
+  (also caps batch export at 50 files to match the RPC's quantity cap).
 
 - **Known architectural limit — payment is enforced in the browser, not the
   server.** Mastering, voice cleanup, stems and export all run client-side. The
