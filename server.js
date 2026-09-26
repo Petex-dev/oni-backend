@@ -32,6 +32,17 @@ const PLAN_BY_PRICE_ID = {
 const REUP_PRICE_ID = 'price_1UHoSJ3jfi4dDsishsXnGTXh'; // Credit Re-up (one-time)
 const ALLOWED_PRICE_IDS = new Set([...Object.keys(PLAN_BY_PRICE_ID), REUP_PRICE_ID]);
 
+// Every Stripe-purchased credit grant goes through apply_credit_grant (Migration 5),
+// which records it in credit_grants and changes the balance in one transaction —
+// exactly once per Stripe event, since Stripe delivers events at least once.
+async function grantCredits(supabase, args) {
+  const { data, error } = await supabase.rpc('apply_credit_grant', args);
+  if (error) throw error;
+  if (data === 'no_profile') throw new Error(`apply_credit_grant: no profile for user ${args.p_user_id}`);
+  if (data === 'duplicate') console.log(`Stripe event ${args.p_stripe_event_id} already granted — skipped`);
+  return data;
+}
+
 // Stripe webhook needs the raw body to verify the signature, so this route
 // must be registered before the global express.json() middleware.
 app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -64,38 +75,43 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
       if (priceId && PLAN_BY_PRICE_ID[priceId]) {
         const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
 
-        // A new subscription is a purchase, not a renewal — add the plan's credits to
-        // whatever the customer already has (free-tier leftovers, unused Re-up credits)
-        // rather than overwriting. Never let paying at this moment cost them credits.
-        const { data: existingProfile, error: fetchError } = await supabase
-          .from('profiles')
-          .select('credits')
-          .eq('id', userId)
-          .single();
-
-        if (fetchError) throw fetchError;
-
+        // Non-credit fields first: safe to repeat, so a retry after a failed grant
+        // below just re-applies them.
         const { error } = await supabase
           .from('profiles')
           .update({
             plan,
-            credits: (existingProfile?.credits || 0) + credits,
-            credits_refreshed_at: new Date().toISOString(),
             stripe_customer_id: session.customer,
             stripe_subscription_id: session.subscription,
           })
           .eq('id', userId);
 
         if (error) throw error;
+
+        // A new subscription is a purchase, not a renewal — the plan's credits are ADDED
+        // to whatever the customer already has. Recorded against the subscription's
+        // first invoice so a refund of that charge can find it.
+        await grantCredits(supabase, {
+          p_user_id: userId,
+          p_kind: 'subscription_start',
+          p_amount: credits,
+          p_stripe_event_id: event.id,
+          p_stripe_invoice_id: session.invoice,
+          p_amount_paid_cents: session.amount_total,
+          p_currency: session.currency,
+        });
       } else if (priceId === REUP_PRICE_ID) {
         // Re-up credits go to bonus_credits, which the invoice.paid renewal reset
         // never touches — a customer keeps what they paid for across renewals.
-        const { error } = await supabase.rpc('increment_bonus_credits', {
+        await grantCredits(supabase, {
           p_user_id: userId,
+          p_kind: 'reup',
           p_amount: 10,
+          p_stripe_event_id: event.id,
+          p_stripe_payment_intent_id: session.payment_intent,
+          p_amount_paid_cents: session.amount_total,
+          p_currency: session.currency,
         });
-
-        if (error) throw error;
       }
 
       res.status(200).json({ received: true });
@@ -140,20 +156,36 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
       const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
       const periodStartIso = new Date(periodStart * 1000).toISOString();
 
-      // Idempotent: only reset credits if we haven't already refreshed them
-      // for this billing period (guards against duplicate webhook delivery).
-      // This looks up the profile by stripe_customer_id — invoices have no
-      // client_reference_id / userId, unlike checkout sessions.
+      // Invoices have no client_reference_id / userId, unlike checkout sessions,
+      // so find the profile by stripe_customer_id.
+      const { data: profile, error: fetchError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('stripe_customer_id', invoice.customer)
+        .maybeSingle();
+
+      if (fetchError) throw fetchError;
+      if (!profile) {
+        return res.status(200).json({ received: true });
+      }
+
+      // Resets credits to the plan amount (no rollover). Idempotent twice over: once
+      // per Stripe event, and only if this billing period hasn't been refreshed yet.
+      await grantCredits(supabase, {
+        p_user_id: profile.id,
+        p_kind: 'renewal',
+        p_amount: credits,
+        p_stripe_event_id: event.id,
+        p_stripe_invoice_id: invoice.id,
+        p_amount_paid_cents: invoice.amount_paid,
+        p_currency: invoice.currency,
+        p_period_start: periodStartIso,
+      });
+
       const { error } = await supabase
         .from('profiles')
-        .update({
-          plan,
-          credits,
-          credits_refreshed_at: new Date().toISOString(),
-          payment_status: 'active',
-        })
-        .eq('stripe_customer_id', invoice.customer)
-        .lt('credits_refreshed_at', periodStartIso);
+        .update({ plan, payment_status: 'active' })
+        .eq('id', profile.id);
 
       if (error) throw error;
 
@@ -199,7 +231,7 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
       const { plan, credits } = PLAN_BY_PRICE_ID[priceId];
       const { data: existing, error: fetchError } = await supabase
         .from('profiles')
-        .select('plan, credits')
+        .select('id, plan, credits')
         .eq('stripe_customer_id', subscription.customer)
         .single();
 
@@ -211,23 +243,44 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
         // used most of their credits shouldn't be treated as "downgrading"
         // just because their remaining balance happens to be low.
         const isUpgrade = credits > existing.credits;
-        const update = {
-          plan,
-          stripe_subscription_id: subscription.id,
-          payment_status: 'active',
-        };
         if (isUpgrade) {
           // Upgrade is a purchase (proration charge), not a renewal — add the new
           // plan's credits to the existing balance rather than overwriting it.
-          update.credits = existing.credits + credits;
-          update.credits_refreshed_at = new Date().toISOString();
+          // The live portal invoices prorations immediately, so the upgrade has its
+          // own invoice; link it only if latest_invoice really is that proration
+          // invoice, never the previous period's (a refund of that one must match
+          // the grant it actually paid for). Granted BEFORE the plan update: if the
+          // plan update then fails, the retry sees the old plan, and the grant call
+          // is a no-op 'duplicate' for this event.
+          let upgradeInvoice = null;
+          if (subscription.latest_invoice) {
+            const inv = await stripe.invoices.retrieve(
+              typeof subscription.latest_invoice === 'string'
+                ? subscription.latest_invoice
+                : subscription.latest_invoice.id
+            );
+            if (inv.billing_reason === 'subscription_update') upgradeInvoice = inv;
+          }
+          await grantCredits(supabase, {
+            p_user_id: existing.id,
+            p_kind: 'upgrade',
+            p_amount: credits,
+            p_stripe_event_id: event.id,
+            p_stripe_invoice_id: upgradeInvoice?.id || null,
+            p_amount_paid_cents: upgradeInvoice?.total ?? null,
+            p_currency: upgradeInvoice?.currency || null,
+          });
         }
         // Downgrade: only `plan` changes here. Credits stay as-is until the
         // next invoice.paid renewal resets them to the new (lower) amount.
         const { error } = await supabase
           .from('profiles')
-          .update(update)
-          .eq('stripe_customer_id', subscription.customer);
+          .update({
+            plan,
+            stripe_subscription_id: subscription.id,
+            payment_status: 'active',
+          })
+          .eq('id', existing.id);
 
         if (error) throw error;
       }
@@ -259,6 +312,53 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
       res.status(200).json({ received: true });
     } catch (error) {
       console.error('Stripe webhook handler error (customer.subscription.deleted):', error.message);
+      res.status(500).json({ error: 'Webhook handler failed' });
+    }
+  } else if (event.type === 'charge.refunded') {
+    // Full or partial refund (issued from the Stripe dashboard). Takes back credits in
+    // proportion to the amount refunded, only from the pool that purchase granted,
+    // floored at 0; the plan is left alone (cancelling is a separate Stripe action).
+    // charge.amount_refunded is cumulative, so repeated partial refunds and re-delivered
+    // events converge on the right total. See apply_credit_refund (Migration 5).
+    const charge = event.data.object;
+
+    try {
+      const paymentIntentId = typeof charge.payment_intent === 'string'
+        ? charge.payment_intent
+        : charge.payment_intent?.id || null;
+
+      // Charges no longer carry their invoice on this API version — ask Stripe which
+      // invoice (if any) this payment paid. Re-up charges have none.
+      let invoiceId = null;
+      if (paymentIntentId) {
+        const payments = await stripe.invoicePayments.list({
+          payment: { type: 'payment_intent', payment_intent: paymentIntentId },
+          limit: 1,
+        });
+        const inv = payments.data[0]?.invoice;
+        invoiceId = typeof inv === 'string' ? inv : inv?.id || null;
+      }
+
+      const { data, error } = await supabase.rpc('apply_credit_refund', {
+        p_stripe_event_id: event.id,
+        p_stripe_charge_id: charge.id,
+        p_stripe_payment_intent_id: paymentIntentId,
+        p_stripe_invoice_id: invoiceId,
+        p_charge_amount_cents: charge.amount,
+        p_refunded_cents_total: charge.amount_refunded,
+      });
+
+      if (error) throw error;
+
+      if (data.status === 'no_grant') {
+        console.warn(`charge.refunded ${charge.id}: no credit grant recorded for this charge — manual review`);
+      } else {
+        console.log(`charge.refunded ${charge.id}:`, JSON.stringify(data));
+      }
+
+      res.status(200).json({ received: true });
+    } catch (error) {
+      console.error('Stripe webhook handler error (charge.refunded):', error.message);
       res.status(500).json({ error: 'Webhook handler failed' });
     }
   } else {

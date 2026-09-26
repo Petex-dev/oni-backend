@@ -108,3 +108,27 @@ Deployed on Railway, connected to this GitHub repo for auto-deploy on push to `m
   output path: server-side rendering, or a server-issued signed unlock token
   that the download requires. Accepted as a small risk at launch scale
   (2026-09-26); revisit when scale or observed abuse justifies it.
+
+- **FIXED 2026-09-26 — refunds take credits back; duplicate webhooks no longer
+  double-grant.** Every Stripe-purchased grant (Re-up, new subscription,
+  upgrade, renewal) now goes through the service-role-only `apply_credit_grant`
+  RPC, which records it in `credit_grants` and changes the balance in one
+  transaction, once per Stripe event ID. Before this, a re-delivered
+  `checkout.session.completed` added the credits a second time. A new
+  `charge.refunded` handler calls `apply_credit_refund`, which:
+  - takes back credits in proportion to the amount refunded, rounded down;
+  - uses Stripe's running refund total, so repeated partial refunds and
+    re-delivered events come out right;
+  - takes only from the pool the purchase granted (no spill-over), floored at 0;
+  - records the shortfall as `uncollected` (`partly_spent`, or `expired` when a
+    later renewal already reset those subscription credits);
+  - leaves the plan alone.
+  Refunds that match no grant (purchases from before this shipped) return 200
+  and are logged in `credit_refund_events` with reason `no_grant`; those are the
+  manual-review list. Upgrades are linked to their proration invoice only when
+  `billing_reason` is `subscription_update`; the live portal invoices prorations
+  immediately, so they always have one. Schema:
+  `migrations/2026-09-26_migration5_credit_grants_and_refunds.sql`. Verified in
+  Stripe test mode with real refunds by `scripts/22-refunds-and-grants-verify.js`.
+  Not handled: disputes/chargebacks (`charge.dispute.created`) and
+  `refund.failed`.
