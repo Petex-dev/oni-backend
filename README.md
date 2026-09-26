@@ -84,3 +84,24 @@ Deployed on Railway, connected to this GitHub repo for auto-deploy on push to `m
   anon/authenticated — and made `deduct_credits` reject amounts <= 0).
   Verified with `scripts/18-bonus-credits-verify.js`.
   **Still to do:** Migration 2 (drop the now-unused `increment_credits`).
+
+- **IN PROGRESS 2026-09-26 — credit prices set server-side.** `deduct_credits`
+  used to take a browser-chosen `p_amount` (a user could pay 1 credit for a
+  5-credit master). New overload `deduct_credits(p_operation, p_quantity)` looks
+  the price up in `credit_prices` and logs every charge to `credit_ledger`
+  (user, operation, quantity, cost, and which pool paid — for future refunds).
+  `migrations/2026-09-26_migration3_server_side_pricing.sql` adds it alongside the
+  old version; `..._migration4_drop_client_priced_deduct.sql` drops the old
+  `p_amount` version once the new frontend is live. The hole is only closed after
+  Migration 4.
+
+- **Known architectural limit — payment is enforced in the browser, not the
+  server.** Mastering, voice cleanup, stems and export all run client-side. The
+  "already paid" flags (`_masterCreditsCharged` etc. in `index.html`) are plain
+  globals, so a technical user can set one from the console, or call the
+  unwrapped export functions, and export without `deduct_credits` ever running.
+  Batch `p_quantity` is also the browser's word. Server-side pricing stops
+  underpaying, not skipping payment. Real enforcement needs the server in the
+  output path: server-side rendering, or a server-issued signed unlock token
+  that the download requires. Accepted as a small risk at launch scale
+  (2026-09-26); revisit when scale or observed abuse justifies it.
